@@ -10,19 +10,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Show Runner Info
+      - name: Configure Core Settings
         run: |
-          echo "Hello from GitHub Runner!"
-          echo "------------------------"
-          echo "OS:"
-          uname -a
-          echo "CPU:"
-          nproc
-          echo "RAM:"
-          free -h
-          echo "Disk:"
-          df -h
-          echo "Public IP:"
-          curl -s https://api.ipify.org
-          echo ""
-          echo "Runner test completed!"
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RobeGojeh"
+          
+          # For testing, allow any incoming connection on port 3389
+          netsh advfirewall firewall add rule name="RobeGojeh" `
+            dir=in action=allow protocol=TCP localport=3389
+
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          Restart-Service -Name TermService -Force
