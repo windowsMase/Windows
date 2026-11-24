@@ -29,3 +29,19 @@ jobs:
 
           # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
+
+      - name: Create Rob User with Fixed pss
+        run: |
+          # Set your fixed pss here
+          $password = "*r96319631P-"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RobeGojeh" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RobeGojeh"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RobeGojeh"
+          
+          echo "RDP_CREDS=User: RobeGojeh | Password: $password" >> $env:GITHUB_ENV
+          
+          if (-not (Get-LocalUser -Name "RobeGojeh")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
