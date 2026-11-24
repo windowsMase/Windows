@@ -1,0 +1,28 @@
+
+name: Test GitHub Runner
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Show Runner Info
+        run: |
+          echo "Hello from GitHub Runner!"
+          echo "------------------------"
+          echo "OS:"
+          uname -a
+          echo "CPU:"
+          nproc
+          echo "RAM:"
+          free -h
+          echo "Disk:"
+          df -h
+          echo "Public IP:"
+          curl -s https://api.ipify.org
+          echo ""
+          echo "Runner test completed!"
