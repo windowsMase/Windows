@@ -10,12 +10,9 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Configure Core Settings
-        shell: pwsh
-        run: |
-          Write-Host "Windows runner is ready."
-          Write-Host "User: $env:USERNAME"
-          Write-Host "Desktop: $env:USERPROFILE\Desktop"
+      # ---------------------------------------
+      # Download and install AWM Cloud Signup
+      # ---------------------------------------
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -51,7 +48,7 @@ jobs:
           Set-Location $project
 
           if (!(Test-Path "package.json")) {
-            throw "package.json was not found in the repository."
+            throw "package.json not found."
           }
 
           if (Test-Path "package-lock.json") {
@@ -64,27 +61,100 @@ jobs:
             throw "NPM installation failed."
           }
 
-          Write-Host "Repository downloaded and dependencies installed."
+          Write-Host "AWM Cloud Signup installed successfully."
+
+      # ---------------------------------------
+      # Original Windows RDP Configuration
+      # ---------------------------------------
+
+      - name: Configure Core Settings
+        shell: pwsh
+        run: |
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "SecurityLayer" `
+            -Value 0
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          New-NetFirewallRule `
+            -DisplayName "RobeGojeh RDP" `
+            -Direction Inbound `
+            -Protocol TCP `
+            -LocalPort 3389 `
+            -Action Allow `
+            -ErrorAction SilentlyContinue
+
+          Restart-Service TermService -Force
+
+          Write-Host "RDP configuration completed."
+
+      # ---------------------------------------
+      # Create Windows User
+      # ---------------------------------------
+
+      - name: Create RDP User
+        shell: pwsh
+        run: |
+          $username = "RobeGojeh"
+          $password = ConvertTo-SecureString "*r96319631P-" -AsPlainText -Force
+
+          if (!(Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
+            New-LocalUser `
+              -Name $username `
+              -Password $password `
+              -FullName "RobeGojeh" `
+              -Description "Remote Desktop User"
+          } else {
+            Set-LocalUser -Name $username -Password $password
+          }
+
+          Add-LocalGroupMember -Group "Administrators" -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "RDP user configured."
+
+      # ---------------------------------------
+      # Install Tailscale 1.82.0
+      # ---------------------------------------
 
       - name: Install Tailscale
         shell: pwsh
         run: |
-          $installer = "$env:TEMP\tailscale-setup.exe"
+          $installer = "$env:TEMP\tailscale-setup.msi"
+
           Invoke-WebRequest `
-            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" `
             -OutFile $installer
 
-          Start-Process $installer -ArgumentList "/quiet" -Wait
+          Start-Process msiexec.exe `
+            -ArgumentList "/i `"$installer`" /quiet /norestart" `
+            -Wait
 
-      - name: Connect to Tailscale
+          Write-Host "Tailscale installed."
+
+      # ---------------------------------------
+      # Connect to Tailscale
+      # ---------------------------------------
+
+      - name: Connect Tailscale
         shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
-            throw "TAILSCALE_AUTH_KEY secret is missing."
-          }
-
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
           & $tailscale up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="github-windows-runner"
@@ -93,12 +163,77 @@ jobs:
             throw "Tailscale connection failed."
           }
 
-          & $tailscale status
+          Start-Sleep -Seconds 10
+
+          $ip = & $tailscale ip -4
+
+          if ([string]::IsNullOrWhiteSpace($ip)) {
+            throw "Could not retrieve Tailscale IP."
+          }
+
+          "TAILSCALE_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          Write-Host "Tailscale connected."
+          Write-Host "Tailscale IP: $ip"
+
+      # ---------------------------------------
+      # Test RDP Connection
+      # ---------------------------------------
+
+      - name: Test RDP Connection
+        shell: pwsh
+        run: |
+          $ip = $env:TAILSCALE_IP
+
+          Write-Host "Testing RDP connection on $ip :3389"
+
+          $client = New-Object System.Net.Sockets.TcpClient
+
+          try {
+            $result = $client.BeginConnect($ip, 3389, $null, $null)
+            $success = $result.AsyncWaitHandle.WaitOne(10000, $false)
+
+            if (!$success) {
+              throw "RDP port connection timed out."
+            }
+
+            $client.EndConnect($result)
+
+            Write-Host "RDP port 3389 is reachable."
+          }
+          finally {
+            $client.Close()
+          }
+
+      # ---------------------------------------
+      # Display RDP Information
+      # ---------------------------------------
+
+      - name: Display Connection Information
+        shell: pwsh
+        run: |
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "       WINDOWS RDP INFORMATION"
+          Write-Host "======================================"
+          Write-Host ""
+          Write-Host "IP Address : $env:TAILSCALE_IP"
+          Write-Host "Username   : RobeGojeh"
+          Write-Host "Password   : *r96319631P-"
+          Write-Host "Port       : 3389"
+          Write-Host ""
+          Write-Host "======================================"
+
+      # ---------------------------------------
+      # Keep Runner Alive
+      # ---------------------------------------
 
       - name: Keep Runner Alive
         shell: pwsh
         run: |
-          Write-Host "Runner is active."
+          Write-Host "Runner is running..."
+
           while ($true) {
-            Start-Sleep -Seconds 60
+            Write-Host "Runner active: $(Get-Date)"
+            Start-Sleep -Seconds 300
           }
