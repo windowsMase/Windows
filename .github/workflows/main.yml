@@ -3,100 +3,102 @@ name: Test GitHub Runner
 
 on:
   workflow_dispatch:
-  push:
 
 jobs:
-  test:
+  build:
     runs-on: windows-latest
+    timeout-minutes: 360
 
     steps:
       - name: Configure Core Settings
+        shell: pwsh
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+          Write-Host "Windows runner is ready."
+          Write-Host "User: $env:USERNAME"
+          Write-Host "Desktop: $env:USERPROFILE\Desktop"
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RobeGojeh"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RobeGojeh" `
-            dir=in action=allow protocol=TCP localport=3389
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
-
-      - name: Create Rob User with Fixed pss
+      - name: Clone and Install AWM Cloud Signup
+        shell: pwsh
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          # Set your fixed pss here
-          $password = "*r96319631P-"
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RobeGojeh" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RobeGojeh"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RobeGojeh"
-          
-          echo "RobeGojeh_CREDS=User: RobeGojeh | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RobeGojeh")) {
-              Write-Error "User creation failed"
-              exit 1
+          $desktop = "$env:USERPROFILE\Desktop"
+          $project = "$desktop\awm-cloud-signup"
+
+          New-Item -ItemType Directory -Force -Path $desktop | Out-Null
+
+          if ([string]::IsNullOrWhiteSpace($env:GH_PAT)) {
+            throw "GH_PAT secret is missing."
           }
+
+          $auth = [Convert]::ToBase64String(
+            [Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GH_PAT")
+          )
+
+          git -c "http.extraheader=AUTHORIZATION: basic $auth" clone `
+            https://github.com/maserepo/awm-cloud-signup.git `
+            $project
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Git clone failed."
+          }
+
+          Set-Location $project
+
+          if (!(Test-Path "package.json")) {
+            throw "package.json was not found in the repository."
+          }
+
+          if (Test-Path "package-lock.json") {
+            npm ci
+          } else {
+            npm install
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "NPM installation failed."
+          }
+
+          Write-Host "Repository downloaded and dependencies installed."
 
       - name: Install Tailscale
+        shell: pwsh
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $installer = "$env:TEMP\tailscale-setup.exe"
+          Invoke-WebRequest `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
+            -OutFile $installer
 
-      - name: Establish Tailscale Connection
-        run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Start-Process $installer -ArgumentList "/quiet" -Wait
 
-      - name: Verify RobeGojeh Accessibility
+      - name: Connect to Tailscale
+        shell: pwsh
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
+            throw "TAILSCALE_AUTH_KEY secret is missing."
           }
-          Write-Host "TCP connectivity successful!"
 
-      - name: Maintain Connection
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          & $tailscale up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="github-windows-runner"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tailscale connection failed."
+          }
+
+          & $tailscale status
+
+      - name: Keep Runner Alive
+        shell: pwsh
         run: |
-          Write-Host "`n=== RobeGojeh ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RobeGojeh"
-          Write-Host "Password: $(echo $env:RobeGojeh_CREDS)"
-          Write-Host "==================`n"
-          
-          # Keep runner active indefinitely (or until manually cancelled)
+          Write-Host "Runner is active."
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
+            Start-Sleep -Seconds 60
           }
